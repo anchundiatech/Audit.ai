@@ -13,6 +13,7 @@ import {
   FileSearch,
   Loader2,
   Shield,
+  FileJson,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -103,7 +104,7 @@ function StepIcon({ status }: { status: StepStatus }) {
   }
   if (status === 'error') {
     return (
-      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[#ef4444]">
+      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-destructive">
         <X className="h-4 w-4 text-white" />
       </div>
     )
@@ -166,8 +167,9 @@ function getFacturaItems(data: Record<string, unknown> | null) {
 }
 
 function normalizeAuditResult(data: Record<string, unknown>): AuditResult {
+  const auditStatus = (data.auditStatus as string || data.status as string || '').toUpperCase()
   return {
-    status: data.status === 'APPROVED' ? 'APPROVED' : 'PENDING_REVIEW',
+    status: auditStatus === 'APPROVED' ? 'APPROVED' : 'PENDING_REVIEW',
     siniestro_id: (data.siniestro_id || data.siniestroId || '') as string,
     taller: (data.taller || data.workshop || '') as string,
     numero_factura: (data.numero_factura || data.numeroFactura || data.numero || data.invoiceNumber || '') as string,
@@ -183,6 +185,84 @@ function normalizeAuditResult(data: Record<string, unknown>): AuditResult {
   }
 }
 
+interface EstimItem {
+  codigo: string
+  descripcion: string
+  cantidad: number
+  precio: number
+  total: number
+}
+
+function performLocalAudit(estimacion: Record<string, unknown> | null, factura: Record<string, unknown> | null): AuditResult {
+  const estimItems = getEstimacionItems(estimacion)
+  const factItems = getFacturaItems(factura)
+
+  const findings: Finding[] = []
+  const duplicateCharges: DuplicateCharge[] = []
+  let discrepancyAmount = 0
+
+  const estimMap = new Map<string, EstimItem>(estimItems.map(i => [i.codigo, i]))
+
+  for (const invItem of factItems) {
+    const estItem = estimMap.get(invItem.codigo)
+    if (!estItem) {
+      findings.push({
+        codigo: invItem.codigo,
+        issue: `Ítem "${invItem.descripcion}" no está en la estimación aprobada`,
+        severity: 'high',
+      })
+      discrepancyAmount += invItem.total
+      continue
+    }
+    if (invItem.cantidad !== estItem.cantidad) {
+      findings.push({
+        codigo: invItem.codigo,
+        issue: `Cantidad facturada (${invItem.cantidad}) no coincide con la estimada (${estItem.cantidad})`,
+        severity: 'medium',
+      })
+      discrepancyAmount += Math.abs(invItem.total - estItem.total)
+    }
+    if (invItem.precio !== estItem.precio) {
+      findings.push({
+        codigo: invItem.codigo,
+        issue: `Precio unitario facturado ($${invItem.precio.toFixed(2)}) no coincide con el acordado ($${estItem.precio.toFixed(2)})`,
+        severity: 'medium',
+      })
+      discrepancyAmount += Math.abs(invItem.total - estItem.total)
+    }
+  }
+
+  const seen = new Map<string, number>()
+  for (const item of factItems) {
+    const idx = seen.get(item.codigo)
+    if (idx !== undefined) {
+      duplicateCharges.push({ codigo: item.codigo, total: item.total })
+    }
+    seen.set(item.codigo, (idx ?? 0) + 1)
+  }
+
+  const requiresHumanReview = findings.length > 0 || duplicateCharges.length > 0
+  const totalFactura = factItems.reduce((s, i) => s + i.total, 0)
+
+  return {
+    status: requiresHumanReview ? 'PENDING_REVIEW' : 'APPROVED',
+    siniestro_id: (estimacion?.siniestro_id as string) || (factura?.siniestro_id as string) || '',
+    taller: (estimacion?.taller as string) || (factura?.taller as string) || '',
+    numero_factura: (factura?.numero_factura as string) || (factura?.invoiceNumber as string) || '',
+    totalDiscrepancies: findings.length + duplicateCharges.length,
+    discrepancyAmount,
+    approvedAmount: totalFactura - discrepancyAmount,
+    requiresHumanReview,
+    recommendations: requiresHumanReview
+      ? ['Se encontraron discrepancias que requieren revisión humana']
+      : ['La factura coincide con la estimación aprobada', 'No se detectaron discrepancias'],
+    findings,
+    duplicateCharges,
+    auditedBy: 'AI Agent',
+    auditedAt: new Date().toISOString(),
+  }
+}
+
 export function InvoiceAuditor() {
   const [phase, setPhase] = useState<AuditPhase>('upload')
   const [steps, setSteps] = useState<Step[]>(initialSteps)
@@ -194,27 +274,85 @@ export function InvoiceAuditor() {
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [webhookError, setWebhookError] = useState<string | null>(null)
+  const [extracting, setExtracting] = useState<{ idx: number; name: string } | null>(null)
   const inputRefEst = useRef<HTMLInputElement>(null)
   const inputRefInv = useRef<HTMLInputElement>(null)
 
-  function processFile(file: File, idx: number) {
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      try {
-        const data = JSON.parse(e.target?.result as string)
+  function readFileAsBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = reader.result as string
+        resolve(result.split(',')[1])
+      }
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+
+  async function extractViaN8n(file: File, idx: number) {
+    setExtracting({ idx, name: file.name })
+    const webhookUrl = localStorage.getItem('insuraudit_n8n_url') || import.meta.env.VITE_N8N_WEBHOOK_URL || ''
+    if (!webhookUrl) {
+      setExtracting(null)
+      alert('n8n webhook not configured. Configure it in Settings > Integrations to process non-JSON files.')
+      return
+    }
+    try {
+      const base64 = await readFileAsBase64(file)
+      const res = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'document_uploaded',
+          data: {
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type || file.name.split('.').pop(),
+            fileBase64: base64,
+          },
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
         if (idx === 0) {
           setEstimacionName(file.name)
-          setEstimacionData(data)
+          setEstimacionData(data as Record<string, unknown>)
         } else {
           setFacturaName(file.name)
-          setFacturaData(data)
+          setFacturaData(data as Record<string, unknown>)
         }
-      } catch {
-        alert('Archivo JSON inválido')
+      } else {
+        alert(`n8n returned HTTP ${res.status}`)
       }
+    } catch {
+      alert('Error connecting to n8n for file extraction')
     }
-    reader.onerror = () => alert('Error al leer el archivo')
-    reader.readAsText(file)
+    setExtracting(null)
+  }
+
+  function processFile(file: File, idx: number) {
+    if (file.name.endsWith('.json')) {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target?.result as string)
+          if (idx === 0) {
+            setEstimacionName(file.name)
+            setEstimacionData(data)
+          } else {
+            setFacturaName(file.name)
+            setFacturaData(data)
+          }
+        } catch {
+          alert('Archivo JSON inválido')
+        }
+      }
+      reader.onerror = () => alert('Error al leer el archivo')
+      reader.readAsText(file)
+    } else {
+      extractViaN8n(file, idx)
+    }
   }
 
   function handleEstimacionInput(e: React.ChangeEvent<HTMLInputElement>) {
@@ -256,35 +394,21 @@ export function InvoiceAuditor() {
       setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'done' } : s))
     }
 
-    try {
-      const baseUrl = localStorage.getItem('insuraudit_n8n_url') || import.meta.env.VITE_N8N_WEBHOOK_URL || 'http://localhost:5678/webhook'
-      const webhookUrl = `${baseUrl.replace(/\/+$/, '')}/invoice-audit`
+    const result = performLocalAudit(estimacionData, facturaData)
+    setResult(result)
 
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          factura: facturaData,
-          estimacion: estimacionData,
-        }),
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        setResult(normalizeAuditResult(data as Record<string, unknown>))
-      } else {
-        setWebhookError(`Webhook respondió con HTTP ${response.status}`)
-        setResult(mockResult)
-      }
-    } catch {
-      setWebhookError('No se pudo conectar con el webhook — usando resultado de prueba')
-      setResult(mockResult)
-    }
+    n8n.auditCompleted(result.siniestro_id || 'unknown', {
+      status: result.status,
+      totalDiscrepancies: result.totalDiscrepancies,
+      discrepancyAmount: result.discrepancyAmount,
+      approvedAmount: result.approvedAmount,
+      findings: result.findings,
+    })
 
     setPhase('result')
   }, [facturaData, estimacionData])
 
-  const allUploaded = !!(facturaData && estimacionData)
+  const allUploaded = !!(facturaData && estimacionData) && !extracting
 
   function resetAll() {
     setPhase('upload')
@@ -356,7 +480,7 @@ export function InvoiceAuditor() {
                   onDrop={handleEstimacionDrop}
                   onClick={() => phase === 'upload' && inputRefEst.current?.click()}
                 >
-                  <input ref={inputRefEst} type="file" accept=".json" className="hidden" onChange={handleEstimacionInput} />
+                  <input ref={inputRefEst} type="file" accept=".json,.pdf,.xlsx,.xls,.jpg,.jpeg,.png" className="hidden" onChange={handleEstimacionInput} />
                   {estimacionName ? (
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
                       <FileSpreadsheet className="h-8 w-8" style={{ color: '#22c55e' }} />
@@ -370,7 +494,7 @@ export function InvoiceAuditor() {
                       <p style={{ fontSize: 11, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748b', marginTop: 12 }}>
                         Estimación aprobada por el ejecutivo
                       </p>
-                      <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>JSON</p>
+                      <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>JSON, PDF, Excel, Image</p>
                     </>
                   )}
                 </div>
@@ -389,7 +513,7 @@ export function InvoiceAuditor() {
                   onDrop={handleFacturaDrop}
                   onClick={() => phase === 'upload' && inputRefInv.current?.click()}
                 >
-                  <input ref={inputRefInv} type="file" accept=".json" className="hidden" onChange={handleFacturaInput} />
+                  <input ref={inputRefInv} type="file" accept=".json,.pdf,.xlsx,.xls,.jpg,.jpeg,.png" className="hidden" onChange={handleFacturaInput} />
                   {facturaName ? (
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
                       <FileText className="h-8 w-8" style={{ color: '#22c55e' }} />
@@ -403,11 +527,18 @@ export function InvoiceAuditor() {
                       <p style={{ fontSize: 11, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748b', marginTop: 12 }}>
                         Factura enviada por el taller
                       </p>
-                      <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>JSON</p>
+                      <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>JSON, PDF, Excel, Image</p>
                     </>
                   )}
                 </div>
               </div>
+
+              {extracting && (
+                <div style={{ marginTop: 16, padding: '10px 14px', borderRadius: 8, backgroundColor: '#E6F1FB', border: '1px solid #bfdbfe', fontSize: 12, color: '#1e40af', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Extrayendo datos de <strong>{extracting.name}</strong> mediante n8n...
+                </div>
+              )}
 
               {/* Run Audit Button */}
               <Button
@@ -629,7 +760,7 @@ export function InvoiceAuditor() {
                 </div>
               )}
 
-              {/* Datos Enviados a Validación */}
+              {/* Datos Enviados a Validación
               {(facturaData || estimacionData) && (
                 <div style={{ marginTop: 20, marginBottom: 16 }}>
                   <h3 style={{ fontSize: 15, fontWeight: 600, color: '#0f172a', marginBottom: 12, borderBottom: '1px solid #e2e8f0', paddingBottom: 8 }}>
@@ -732,6 +863,7 @@ export function InvoiceAuditor() {
                   </details>
                 </div>
               )}
+                */}
 
               {/* Realizar Otra */}
               <button
