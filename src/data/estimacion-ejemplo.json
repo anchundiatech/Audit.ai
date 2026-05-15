@@ -1,0 +1,22 @@
+{
+  "siniestro_id": "SIN-2024-0831",
+  "ejecutivo": "Carlos Velez",
+  "fecha_aprobacion": "2024-11-10",
+  "total_estimado": 365,
+  "items_aprobados": [
+    {
+      "codigo": "MO-001",
+      "descripcion": "Labor painting complete",
+      "cantidad_aprobada": 1,
+      "precio_acordado": 85,
+      "total_aprobado": 85
+    },
+    {
+      "codigo": "REP-045",
+      "descripcion": "Front windshield",
+      "cantidad_aprobada": 1,
+      "precio_acordado": 280,
+      "total_aprobado": 280
+    }
+  ]
+}
