@@ -394,16 +394,35 @@ export function InvoiceAuditor() {
       setSteps(prev => prev.map((s, idx) => idx === i ? { ...s, status: 'done' } : s))
     }
 
-    const result = performLocalAudit(estimacionData, facturaData)
-    setResult(result)
+    try {
+      const webhookUrl = localStorage.getItem('insuraudit_n8n_url') || import.meta.env.VITE_N8N_WEBHOOK_URL || ''
 
-    n8n.auditCompleted(result.siniestro_id || 'unknown', {
-      status: result.status,
-      totalDiscrepancies: result.totalDiscrepancies,
-      discrepancyAmount: result.discrepancyAmount,
-      approvedAmount: result.approvedAmount,
-      findings: result.findings,
-    })
+      if (webhookUrl) {
+        const response = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            factura: facturaData,
+            estimacion: estimacionData,
+          }),
+        })
+
+        if (response.ok) {
+          const body = await response.json() as Record<string, unknown>
+          const parsed = (body.parsed || body) as Record<string, unknown>
+          setResult(normalizeAuditResult(parsed))
+        } else {
+          const text = await response.text().catch(() => '')
+          setWebhookError(`n8n respondió con HTTP ${response.status}${text ? `: ${text}` : ''}`)
+          setResult(performLocalAudit(estimacionData, facturaData))
+        }
+      } else {
+        setResult(performLocalAudit(estimacionData, facturaData))
+      }
+    } catch (err) {
+      setWebhookError('n8n no disponible — usando auditoría local')
+      setResult(performLocalAudit(estimacionData, facturaData))
+    }
 
     setPhase('result')
   }, [facturaData, estimacionData])
