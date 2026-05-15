@@ -1,0 +1,275 @@
+{
+  "name": "Auditor Agéntico de Siniestros",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "invoice-audit",
+        "responseMode": "lastNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        -16
+      ],
+      "id": "2db5c780-ac58-45ce-a295-ff2aeb2ce8f1",
+      "name": "Webhook",
+      "webhookId": "3e119940-b203-49bc-8edc-9ac8a6a5dc9d"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        528,
+        208
+      ],
+      "id": "9e68a312-123b-4425-8e24-7f5686835add",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "zz0XaWHdaCv29nfI",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nlet factura, estimacion;\n\nif (typeof input.body === 'string') {\n  const parsed = JSON.parse(input.body);\n  factura = parsed.factura;\n  estimacion = parsed.estimacion;\n} else if (input.body && typeof input.body === 'object') {\n  factura = input.body.factura;\n  estimacion = input.body.estimacion;\n} else {\n  factura = input.factura;\n  estimacion = input.estimacion;\n}\n\nreturn [{\n  json: {\n    factura: factura,\n    estimacion: estimacion\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        336,
+        -32
+      ],
+      "id": "8346d0fd-8265-446b-8860-1572df24c906",
+      "name": "Analizar factura JSON"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Audit this invoice and return ONLY valid JSON:\n\nINVOICE:\n{{ JSON.stringify($json.factura) }}\n\nESTIMATION:\n{{ JSON.stringify($json.estimacion) }}",
+        "options": {
+          "systemMessage": "You are an expert auditor of mechanic workshop invoices for insurance companies.\n\nAGREED RATE CARD:\n- Category A parts: maximum $200/unit\n- Category B parts: maximum $150/unit\n- Standard labor: $180/hour\n- Specialized labor: $250/hour\n\nDUPLICATE DETECTION RULES:\n- If two items have the same \"codigo\" → DUPLICATE, severity: high\n- A duplicate ALWAYS forces auditStatus: rejected and requiresHumanReview: true\n\nVERDICT RULES:\n- findings with severity \"high\" → auditStatus: \"rejected\", requiresHumanReview: true\n- empty findings → auditStatus: \"approved\", requiresHumanReview: false\n\nRespond ONLY with valid JSON using exactly these fields: auditStatus, totalDiscrepancies, discrepancyAmount, approvedAmount, requiresHumanReview, recommendations, findings, duplicateCharges."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        656,
+        -16
+      ],
+      "id": "8b9aeb7e-2d15-40ab-be30-b5c5a66d70ae",
+      "name": "Audit Agent"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d66e8b5b-9922-4e09-a48e-308738974810",
+              "leftValue": "={{ $json.requiresHumanReview }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1440,
+        -16
+      ],
+      "id": "93b07eb1-98a8-4223-84c5-0aeb7234f83b",
+      "name": "¿Requiere revisión humana?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const audit = $input.first().json;\nconst data = $('Analizar factura JSON').first().json;\n\nconst factura = data.factura || {};\n\nreturn [{\n  json: {\n    status: \"PENDING_REVIEW\",\n    siniestro_id: factura.siniestro_id || \"N/A\",\n    taller: factura.taller || \"N/A\",\n    numero_factura: factura.numero || \"N/A\",\n    approvedAmount: audit.approvedAmount || 0,\n    totalDiscrepancies: audit.totalDiscrepancies || 0,\n    discrepancyAmount: audit.discrepancyAmount || 0,\n    requiresHumanReview: true,\n    recommendations: audit.recommendations || \"\",\n    findings: audit.findings || [],\n    duplicateCharges: audit.duplicateCharges || [],\n    auditedBy: \"AI Agent\",\n    auditedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1648,
+        -176
+      ],
+      "id": "8eb7b0aa-1871-421d-84ad-daac816ac471",
+      "name": "Marcar para revisión humana"
+    },
+    {
+      "parameters": {
+        "jsCode": "const audit = $input.first().json;\nconst data = $('Analizar factura JSON').first().json;\n\nconst factura = data.factura || {};\n\nreturn [{\n  json: {\n    status: \"APPROVED\",\n    siniestro_id: factura.siniestro_id || \"N/A\",\n    taller: factura.taller || \"N/A\",\n    numero_factura: factura.numero || \"N/A\",\n    approvedAmount: audit.approvedAmount || 0,\n    totalDiscrepancies: 0,\n    requiresHumanReview: false,\n    recommendations: audit.recommendations || \"Invoice approved\",\n    findings: [],\n    duplicateCharges: [],\n    auditedBy: \"AI Agent\",\n    auditedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1664,
+        -16
+      ],
+      "id": "56430ef5-47a9-4325-a198-8852a7bfc609",
+      "name": "Aprobación automática de facturas"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.output;\nlet parsed;\n\ntry {\n  if (typeof raw === \"object\") {\n    parsed = raw;\n  } else {\n    const cleaned = raw\n      .replace(/```json/g, \"\")\n      .replace(/```/g, \"\")\n      .trim();\n    parsed = JSON.parse(cleaned);\n  }\n} catch (e) {\n  parsed = {};\n}\n\nconst estimacion = $(\"Analizar factura JSON\").first().json.estimacion;\nconst factura = $(\"Analizar factura JSON\").first().json.factura;\n\nconst totalEstimado = estimacion?.total_estimado || 0;\nconst totalFactura = factura?.total_factura || 0;\n\nreturn { parsed, totalEstimado, totalFactura };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        -16
+      ],
+      "id": "88b00fb4-e346-42e6-bd18-6106bef5b29b",
+      "name": "Parse Invoice JSON"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nconst raw = input.parsed || input.output;\nlet parsed = {};\n\ntry {\n  if (typeof raw === 'object' && raw !== null) {\n    parsed = raw;\n  } else if (typeof raw === 'string') {\n    const cleaned = raw.replace(/```json/g, '').replace(/```/g, '').trim();\n    parsed = JSON.parse(cleaned);\n  }\n} catch(e) {\n  parsed = {};\n}\n\nconst findings = Array.isArray(parsed.findings) ? parsed.findings : [];\nconst duplicateCharges = Array.isArray(parsed.duplicateCharges) ? parsed.duplicateCharges : [];\nconst totalDiscrepancies = typeof parsed.totalDiscrepancies === 'number' ? parsed.totalDiscrepancies : findings.length;\nconst discrepancyAmount = typeof parsed.discrepancyAmount === 'number' ? parsed.discrepancyAmount : 0;\nconst approvedAmount = typeof parsed.approvedAmount === 'number' ? parsed.approvedAmount : input.totalEstimado || 0;\nconst recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : typeof parsed.recommendations === 'string' ? [parsed.recommendations] : [];\nconst hasHighFindings = findings.some(f => f.severity === 'high');\nconst hasDuplicates = duplicateCharges.length > 0;\nconst requiresHumanReview = hasHighFindings || hasDuplicates || parsed.requiresHumanReview === true;\nconst auditStatus = (hasHighFindings || hasDuplicates) ? 'rejected' : (parsed.auditStatus || 'approved');\n\nif (requiresHumanReview && findings.length === 0) {\n  findings.push({\n    codigo: 'REVIEW_REQUIRED',\n    issue: 'Se requiere revisión humana según criterio del agente',\n    severity: 'medium',\n  });\n}\n\nreturn [{\n  json: {\n    auditStatus,\n    totalDiscrepancies,\n    discrepancyAmount,\n    approvedAmount,\n    requiresHumanReview,\n    recommendations,\n    findings,\n    duplicateCharges,\n    siniestro_id: $('Parse Invoice JSON').first().json.factura?.siniestro_id || '',\n    taller: $('Parse Invoice JSON').first().json.factura?.taller || '',\n    numero_factura: $('Parse Invoice JSON').first().json.factura?.numero || '',\n    auditedBy: 'AI Agent',\n    auditedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        -16
+      ],
+      "id": "ef14a4d6-e048-4ec4-983b-9afbd03d6360",
+      "name": "Code in JavaScript"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Analizar factura JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Audit Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analizar factura JSON": {
+      "main": [
+        [
+          {
+            "node": "Audit Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Invoice JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Requiere revisión humana?": {
+      "main": [
+        [
+          {
+            "node": "Marcar para revisión humana",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aprobación automática de facturas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marcar para revisión humana": {
+      "main": [
+        []
+      ]
+    },
+    "Aprobación automática de facturas": {
+      "main": [
+        []
+      ]
+    },
+    "Parse Invoice JSON": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "¿Requiere revisión humana?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "ca99430f-1e92-4706-9363-61fb702f545f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "75214b94489248b42b02e2159933780d8d392091bb59ce57774a1421fe0c5c48"
+  },
+  "id": "auOXekhCqzOB9b2c",
+  "tags": []
+}
