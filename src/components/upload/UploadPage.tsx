@@ -213,6 +213,7 @@ export function UploadPage() {
     setDragOver(false)
     const dropped = Array.from(e.dataTransfer.files).filter(f =>
       f.name.endsWith('.pdf') || f.name.endsWith('.json') || f.name.endsWith('.xml') ||
+      f.name.endsWith('.xlsx') || f.name.endsWith('.xls') ||
       f.type === 'image/jpeg' || f.type === 'image/png'
     )
     if (dropped.length > 0) {
@@ -283,7 +284,7 @@ export function UploadPage() {
                 <input
                   ref={inputRef}
                   type="file"
-                  accept=".pdf,.json,.xml,.jpg,.jpeg,.png"
+                  accept=".pdf,.json,.xml,.xlsx,.xls,.jpg,.jpeg,.png"
                   multiple
                   className="hidden"
                   onChange={handleFileSelect}
@@ -295,7 +296,7 @@ export function UploadPage() {
                       <Upload className="h-6 w-6 text-primary" />
                     </div>
                     <p className="text-base font-semibold">Drop files here or click to upload</p>
-                    <p className="text-sm text-muted-foreground mt-1">PDF, JSON, XML, JPEG, PNG - Max 25MB each</p>
+                    <p className="text-sm text-muted-foreground mt-1">PDF, JSON, XML, Excel, JPEG, PNG - Max 25MB each</p>
                     <div className="flex gap-2 mt-4">
                       <Badge variant="secondary">Invoice PDF</Badge>
                       <Badge variant="secondary">Estimation File</Badge>
@@ -512,7 +513,7 @@ export function UploadPage() {
               </div>
               <div className="flex gap-2">
                 <AlertCircle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
-                <span className="text-muted-foreground">Supported: PDF, JSON, XML, JPEG, PNG</span>
+                <span className="text-muted-foreground">Supported: PDF, JSON, XML, Excel, JPEG, PNG</span>
               </div>
             </CardContent>
           </Card>
