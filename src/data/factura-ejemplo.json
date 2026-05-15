@@ -3,7 +3,7 @@
   "taller": "Taller del Norte",
   "numero": "FAC-2024-0831",
   "fecha": "2024-11-15",
-  "total_factura": 510,
+  "total_factura": 450,
   "items": [
     {
       "codigo": "MO-001",
@@ -17,8 +17,8 @@
       "codigo": "REP-045",
       "descripcion": "Front windshield",
       "cantidad": 1,
-      "precio_unitario": 340,
-      "total": 340
+      "precio_unitario": 280,
+      "total": 280
     }
   ]
 }
